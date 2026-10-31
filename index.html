@@ -3,70 +3,39 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#f5f3eb">
+  <meta name="theme-color" content="#f7f6f1">
   <meta name="referrer" content="no-referrer">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
-  <title>LATTE — 相談の続きを、ここに。</title>
+  <title>LATTE</title>
   <link rel="stylesheet" href="styles.css">
   <script src="app.js" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">本文へ</a>
   <section id="locked-screen" class="locked-screen" aria-labelledby="locked-title">
-    <div class="locked-brand">LATTE<span>YOUR CONVERSATION, CONTINUED.</span></div>
     <div class="locked-card">
-      <svg class="cup-avatar" viewBox="0 0 180 170" role="img" aria-label="カップの相棒、ラテ"><ellipse cx="84" cy="150" rx="57" ry="7" fill="#ded6c3"/><path d="M130 64c38-5 37 45 1 47" fill="none" stroke="#bc966c" stroke-width="12"/><path d="M34 60h103l-7 62c-3 35-85 35-89 0z" fill="#ead3ad"/><ellipse cx="85" cy="61" rx="52" ry="15" fill="#b58b60"/><ellipse cx="85" cy="59" rx="43" ry="10" fill="#faf0da"/><path d="M67 58c-5-10 12-12 18-3 8-9 22-6 18 2-4 5-13 9-18 11z" fill="#bd986d"/><g fill="#4c493c"><ellipse cx="65" cy="94" rx="3" ry="4"/><ellipse cx="105" cy="94" rx="3" ry="4"/></g><path d="M79 104q6 6 12 0" fill="none" stroke="#4c493c" stroke-width="2.8" stroke-linecap="round"/><g fill="none" stroke="#c3b296" stroke-width="2.5" stroke-linecap="round"><path d="M65 36c-12-9 10-16 0-25"/><path d="M86 31c-11-9 11-15 1-24"/><path d="M108 37c-12-9 10-15 1-23"/></g></svg>
-      <p class="eyebrow">YOUR PRIVATE LATTE SPACE</p>
-      <h1 id="locked-title">相談の続きを、ここに。</h1>
-      <p class="locked-description">話したこと、ラテからの提案、あなたが決めたこと。<br>いつものチャットの続きを、ひと目で辿れる場所。</p>
-      <div id="locked-status" class="locked-status" role="status" aria-live="polite"><span class="lock-symbol" aria-hidden="true">◇</span><div><h2 id="locked-status-title">専用リンクで開いてください</h2><p id="locked-status-detail">あなたの記録を開くには、LATTEがこのチャットで渡す専用リンクが必要です。</p></div></div>
-      <button id="locked-retry" class="primary-button" hidden>もう一度確認する</button>
-      <p class="demo-entry"><a href="?demo=1">架空データで、画面の使い方を見る →</a></p>
-      <div class="locked-benefits"><span>判断待ちが分かる</span><span>会話へ戻れる</span><span>進んだことが残る</span></div>
+      <p class="brand">LATTE<span aria-hidden="true">.</span></p>
+      <h1 id="locked-title">専用リンクから<br>開いてください。</h1>
+      <div class="locked-status" role="status" aria-live="polite"><h2 id="locked-status-title">あなたの記録を開きます</h2><p id="locked-status-detail">このチャットでお渡しする専用リンクを使ってください。</p></div>
+      <button id="locked-retry" class="retry-button" hidden>もう一度確認する</button>
+      <p class="locked-fine-print">専用リンクを知る人は記録を読めます。ほかの人に共有しないでください。</p>
+      <a class="demo-link" href="?demo=1">架空データで画面を見る</a>
     </div>
-    <p class="locked-fine-print">記録を反映する方式は、あなたの同意後に有効になります。暗号化した記録は公開GitHubに保存され、専用リンクを知る人は内容を開けます。リンクは他の人に共有しないでください。</p>
   </section>
-
-  <div id="workspace" class="workspace" hidden>
-    <aside class="sidebar" aria-label="メインメニュー">
-      <div class="brand"><span class="brand-icon" aria-hidden="true">L<span>•</span></span><span>LATTE<small>YOUR NEXT CHAPTER</small></span></div>
-      <p class="sidebar-label">OUR WORKSPACE</p>
-      <nav class="navigation" aria-label="ページ">
-        <button class="nav-item active" data-view="overview" aria-current="page"><span aria-hidden="true">◌</span><span>今の状況</span></button>
-        <button class="nav-item" data-view="conversations"><span aria-hidden="true">≋</span><span>会話の記録</span></button>
-        <button class="nav-item" data-view="proposals"><span aria-hidden="true">▤</span><span>提案と準備</span></button>
-        <button class="nav-item" data-view="profile"><span aria-hidden="true">♡</span><span>あなたの軸</span></button>
-      </nav>
-      <div class="sidebar-note"><span aria-hidden="true">✻</span><p>話すのは、いつものチャットで。<br>ここでは、続きが見える。</p></div>
-    </aside>
-    <div class="content-wrap">
-      <aside id="demo-banner" class="demo-banner" aria-label="画面例の表示" hidden><div><strong>架空データの画面例</strong><p>あなたの会話や個人情報は、まだ反映されていません。</p></div><a href="./">自分の記録に戻る →</a></aside>
-      <header class="topbar"><span>LATTE / <b id="current-view-title">今の状況</b></span><div class="topbar-actions"><span id="sync-badge" class="sync-badge">記録を読み込みました</span><button id="refresh" class="refresh-button" aria-label="最新の記録に更新する">↻ <span>更新</span></button></div></header>
-      <main id="main" tabindex="-1">
-        <div id="workspace-notice" class="notice" role="status" aria-live="polite" hidden></div>
-        <section class="view" id="view-overview" aria-labelledby="overview-title">
-          <div class="page-heading"><div><p class="eyebrow">A LITTLE CLARITY, A LITTLE STEP.</p><h1 id="overview-title">今の状況を、<br>ひと目で。</h1><p>あなたが管理しなくても、話したことが次につながるように。</p></div><span class="heading-flower" aria-hidden="true">✻</span></div>
-          <section class="reflection-strip" aria-label="記録の反映状況"><div><span class="status-dot" aria-hidden="true"></span><strong>このチャットから、LATTEが記録を反映</strong><p id="last-updated"></p></div><button class="text-button" id="coverage-link">反映した範囲を見る →</button></section>
-          <div class="stats-grid" aria-label="進み具合"><div class="stat-card"><span>方針の判断待ち</span><strong id="stat-decisions">0<small>件</small></strong><p>ラテからの提案</p></div><div class="stat-card"><span>書類の確認待ち</span><strong id="stat-documents">0<small>件</small></strong><p>内容を見てほしいもの</p></div><div class="stat-card"><span>応募の判断待ち</span><strong id="stat-applications">0<small>件</small></strong><p>求人と準備が揃ったもの</p></div></div>
-          <div class="overview-grid"><div><section class="surface next-focus"><p class="eyebrow">JUST ONE THING</p><h2>次に、ひとつだけ。</h2><div id="next-focus"></div></section><section class="section-block"><div class="section-heading"><h2>ラテから、こんな提案。</h2><button class="text-button" data-go="proposals">すべて見る →</button></div><div id="overview-proposals" class="card-list"></div></section></div><aside><section class="surface"><p class="eyebrow">WHAT WE DECIDED</p><h2>大切にすることが、見えてきた。</h2><div id="recent-decisions"></div></section><section class="section-block"><div class="section-heading"><h2>最近の動き</h2></div><div id="recent-activities" class="activity-list"></div></section><p class="quiet-note">判断は、いつものチャットで。ここは進み具合と、その理由を確認する場所です。</p></aside></div>
-        </section>
-        <section class="view" id="view-conversations" aria-labelledby="conversations-title" hidden>
-          <div class="page-heading"><div><p class="eyebrow">THE THREAD THAT CONNECTS US.</p><h1 id="conversations-title">会話の記録</h1><p>何を話して、どう考えたか。その続きから話せるように。</p></div></div>
-          <section class="surface coverage-panel"><h2>記録している範囲</h2><p id="coverage-description"></p><p id="coverage-meta" class="muted"></p><p class="fine-print">この作業環境のLATTEが反映した記録です。ChatGPT全体の常時取得や、別のチャットの自動取り込みは行いません。要約と原文の抜粋は分けて表示します。</p></section>
-          <label class="search-label" for="conversation-search">会話を探す<input id="conversation-search" type="search" placeholder="言葉やテーマで検索" maxlength="200"></label><p id="conversation-count" class="muted" aria-live="polite"></p><div id="conversation-list" class="conversation-list"></div>
-        </section>
-        <section class="view" id="view-proposals" aria-labelledby="proposals-title" hidden>
-          <div class="page-heading"><div><p class="eyebrow">FROM CONVERSATION TO ACTION.</p><h1 id="proposals-title">提案と準備</h1><p>「こうしてみようか」から、準備できたものまで。</p></div></div>
-          <div class="filter-row" role="group" aria-label="提案の絞り込み"><button data-filter="all" aria-pressed="true">すべて</button><button data-filter="awaiting_decision" aria-pressed="false">方針の判断待ち</button><button data-filter="preparing" aria-pressed="false">準備中</button><button data-filter="waiting_to_apply" aria-pressed="false">応募の判断待ち</button></div>
-          <div id="proposal-list" class="card-list"></div><section class="section-block"><div class="section-heading"><h2>ラテが用意したもの</h2></div><div id="document-list" class="card-list"></div></section>
-        </section>
-        <section class="view" id="view-profile" aria-labelledby="profile-title" hidden>
-          <div class="page-heading"><div><p class="eyebrow">THE THINGS THAT MATTER TO YOU.</p><h1 id="profile-title">あなたの軸</h1><p>何度も説明しなくていいように。決めつけず、分かっていることから。</p></div></div>
-          <section class="surface"><div class="section-heading"><h2>仕事選びで大切なこと</h2></div><div id="preference-list" class="preference-list"></div></section><section class="section-block"><div class="section-heading"><h2>覚えていること</h2></div><div id="fact-list" class="fact-list"></div></section><section class="surface connection-panel"><h2>このページとの接続</h2><p>専用リンクの鍵を、このブラウザーに保存しています。記録の内容自体はブラウザーに保存せず、開くたびに復号して表示します。</p><p class="fine-print">接続を解除すると、この端末で記録を開く鍵と現在の表示を消します。公開GitHubに残る過去の暗号化データを削除する操作ではありません。</p><button id="disconnect" class="secondary-button">この端末の接続を解除</button></section>
-        </section>
-      </main>
-      <footer class="page-footer"><b>LATTE</b><span>話したことを、これからにつなぐ。</span><span id="revision"></span></footer>
-    </div>
+  <div id="workspace" class="paper" hidden>
+    <aside id="demo-banner" class="demo-banner" hidden><span>架空データの画面例です</span><a href="./">自分の記録に戻る</a></aside>
+    <header class="page-header">
+      <h1 class="brand">LATTE<span aria-hidden="true">.</span></h1>
+      <div class="update-area"><p id="last-updated"></p><button id="refresh" class="refresh-button" aria-label="最新の記録に更新する" title="最新の記録に更新する">↻</button></div>
+    </header>
+    <main id="main" tabindex="-1">
+      <p id="workspace-notice" class="notice" role="status" aria-live="polite" hidden></p>
+      <section id="section-new" class="record-section" aria-labelledby="title-new"><h2 id="title-new">新しい提案</h2><div id="list-new" class="record-list"></div></section>
+      <section id="section-decision" class="record-section" aria-labelledby="title-decision"><h2 id="title-decision">判断待ち</h2><div id="list-decision" class="record-list"></div></section>
+      <section id="section-deferred" class="record-section" aria-labelledby="title-deferred"><h2 id="title-deferred">保留中</h2><div id="list-deferred" class="record-list"></div></section>
+      <section id="section-applied" class="record-section" aria-labelledby="title-applied"><h2 id="title-applied">応募中</h2><div id="list-applied" class="record-list"></div></section>
+    </main>
+    <footer class="page-footer"><button id="disconnect" class="quiet-button">この端末の接続を解除</button></footer>
   </div>
 </body>
 </html>
