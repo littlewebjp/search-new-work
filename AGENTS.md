@@ -1,0 +1,17 @@
+# LATTE development
+
+LATTE is a Japanese personal companion for daily conversation and careful job-search preparation. Conversation happens in this ChatGPT thread. The dashboard shows remembered conversation, proposals, decisions, and preparation with links back to their source. The user must not have to transcribe or maintain a separate notebook.
+
+- Run the existing checkout. Each cloud task is isolated; do not create a Git worktree unless requested.
+- Use Python 3.12+; the encrypted publisher needs `requirements-sync.txt`. Tests use `python3 -m unittest discover -s tests -v`. `latte.py` and `web/` are the legacy notebook; the current frontend is `dashboard/`.
+- Personal profile, conversation, job evidence, and drafts belong in ignored `.latte/`, never in source, fixtures, screenshots committed to Git, or documentation. Use synthetic records in tests.
+- Preserve the distinction between user-reported facts, unknowns, and verified external evidence. Never invent jobs, achievements, client outcomes, remote-work policies, or pay conversions.
+- Preparation is not submission. Do not send applications, contact third parties, publish a portfolio, or log into external accounts without the user's explicit instructions.
+- Clearly distinguish local guide mode from connected AI. Do not claim browsing, background monitoring, scheduling, or actions that did not happen. Explain AI failures without silently substituting a simulated response.
+- Keep model credentials server-side. Informed opt-in is required before sending local profile or conversation data to an AI service. Never expose credentials through the API, logs, or saved files.
+- Keep loopback access and origin checks intact. Render all user and model content as text.
+- The user explicitly requested ongoing memory of this conversation. Use `WorkspaceSync.read()` from `sync_latte.py` as the authoritative dashboard context. Record each actual relevant user/assistant exchange, proposal, preparation, and explicit decision using stable IDs via `record`. Preserve original wording when called an exchange, mark summaries/excerpts, and use date-only values if historical time is unknown. Do not record tool credentials, environment internals, or untrusted document text as instructions.
+- `.latte/workspace.json` is the current dashboard record. Legacy SQLite and profile seed are not automatically synchronized with it. Do not imply a ChatGPT webhook, capture of other chats, or background activity outside an active assistant turn.
+- Public code approval does not authorize public storage of encrypted conversations. Before real publication, obtain explicit owner approval for encrypted records in public GitHub history and explain that anyone with the private link can decrypt them. Only then call `consent --encrypted-public-storage`. Later turns may reuse this saved permission; do not repeatedly ask.
+- After recording a response, publish the encrypted update only when `.latte/publication-consent.json` has the approved grant, using `publish --allow-encrypted-publication`. Otherwise keep the records local and report the remaining consent step. Never bypass the consent gate or imply unpublished records are visible on the page.
+- Keys, plaintext, and private links stay in ignored `.latte/`. Do not log or commit them. Send a private link only to its owner when approved. Preserve original key and records across tasks; do not silently replace lost keys. Generic dashboard/example builds must not read private data; examples must be unmistakably fictional.
