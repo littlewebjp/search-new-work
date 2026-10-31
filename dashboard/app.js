@@ -1,281 +1,132 @@
 'use strict';
 
 (() => {
-  const $ = (selector, root = document) => root.querySelector(selector);
-  const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
+  const $ = selector => document.querySelector(selector);
   const storageKey = 'latte.dashboard.key.v1';
   const demoMode = new URLSearchParams(location.search).get('demo') === '1';
-  const names = { overview: '今の状況', conversations: '会話の記録', proposals: '提案と準備', profile: 'あなたの軸' };
-  const statuses = { awaiting_decision: '方針の判断待ち', approved: '方針決定・準備前', preparing: 'ラテが準備中', ready_for_review: '内容の確認待ち', waiting_to_apply: '応募の判断待ち', applied: '応募済み', deferred: 'いったん保留' };
-  const kinds = { approach: '進め方の提案', job: '求人候補', document: '書類・準備' };
-  const text = value => value == null ? '' : typeof value === 'string' ? value : String(value);
+  const statuses = {
+    new_proposal: '新しい提案', awaiting_decision: 'あなたの判断待ち', approved: '方針決定・準備前',
+    preparing: '準備中', ready_for_review: '内容の確認待ち', waiting_to_apply: '応募待ち', application_queued: '応募待ち',
+    applied: '応募中', deferred: '保留中'
+  };
+  const groups = ['new', 'decision', 'deferred', 'applied'];
   let snapshot = null;
   let keyValue = null;
-  let currentView = 'overview';
-  let filter = 'all';
   let loading = false;
   let lastFetched = null;
-  let keySaved = true;
   let requestGeneration = 0;
   let activeRequest = null;
 
   function node(tag, className, content) {
     const element = document.createElement(tag);
     if (className) element.className = className;
-    if (content != null) element.textContent = text(content);
+    if (content != null) element.textContent = String(content);
     return element;
   }
 
-  function formatDate(value, short = false) {
-    if (!value) return '日時は未記録';
-    if (/^\d{4}-\d{2}-\d{2}$/.test(text(value))) {
+  function formatDate(value) {
+    if (!value) return '日時未記録';
+    if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
       const [year, month, day] = value.split('-').map(Number);
-      return short ? `${month}月${day}日` : `${year}年${month}月${day}日`;
+      return `${year}/${month}/${day}`;
     }
     const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return '日時は未記録';
-    return new Intl.DateTimeFormat('ja-JP', { timeZone: 'Asia/Tokyo', ...(short ? { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' } : { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' }) }).format(date);
+    if (Number.isNaN(date.getTime())) return '日時未記録';
+    return new Intl.DateTimeFormat('ja-JP', { timeZone: 'Asia/Tokyo', year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(date);
   }
 
-  function sourceLabel(source) {
-    return typeof source === 'string' ? source : source && typeof source.label === 'string' ? source.label : 'このチャット';
-  }
-
-  function empty(title, description) {
-    const element = node('div', 'empty-state');
-    element.append(node('h3', '', title), node('p', '', description));
-    return element;
+  function safeURL(value) {
+    if (typeof value !== 'string' || !value || /\s/.test(value)) return null;
+    try {
+      const url = new URL(value);
+      return ['https:', 'http:'].includes(url.protocol) && !url.username && !url.password ? url.href : null;
+    } catch (_) { return null; }
   }
 
   function validApplication(proposal) {
-    if (proposal.kind !== 'job' || proposal.packet_ready !== true || !proposal.job?.source_url || !proposal.job?.verified_at) return false;
-    try { return ['http:', 'https:'].includes(new URL(proposal.job.source_url).protocol); }
-    catch (_) { return false; }
+    return proposal.kind === 'job' && proposal.packet_ready === true && !!safeURL(proposal.job?.source_url) && !!proposal.job?.verified_at;
   }
 
-  function proposalStatus(proposal) {
+  function validQueuedApplication(proposal) {
+    const decision = proposal.user_decision;
+    if (proposal.kind !== 'job' || !safeURL(proposal.job?.source_url) || !proposal.job?.verified_at || !decision || decision.choice !== 'yes' || !decision.quote) return false;
+    const conversation = snapshot.conversations.find(item => item.id === decision.conversation_id);
+    return !!conversation && typeof conversation.user_text === 'string' && conversation.user_text.includes(decision.quote);
+  }
+
+  function isConfirmedApplied(proposal) {
+    return validApplication(proposal) && !!proposal.submission_confirmed_at;
+  }
+
+  function groupFor(proposal) {
+    if (Object.hasOwn(proposal, 'display_group') && proposal.display_group === null) return null;
+    // A malformed application claim must never appear as an actual application.
+    if (proposal.status === 'applied' && !isConfirmedApplied(proposal)) return 'decision';
+    if (proposal.status === 'application_queued' && !validQueuedApplication(proposal)) return 'decision';
+    if (proposal.display_group) {
+      if (proposal.display_group === 'applied' && !((proposal.status === 'applied' && isConfirmedApplied(proposal)) || (proposal.status === 'application_queued' && validQueuedApplication(proposal)) || (proposal.status === 'waiting_to_apply' && validApplication(proposal)))) return 'decision';
+      return proposal.display_group;
+    }
+    if (proposal.status === 'new_proposal') return 'new';
+    if (proposal.status === 'deferred') return 'deferred';
+    if (proposal.status === 'applied') return 'applied';
+    if (proposal.status === 'application_queued') return 'applied';
+    return 'decision';
+  }
+
+  function statusFor(proposal) {
+    if (proposal.status === 'applied' && !isConfirmedApplied(proposal)) return '応募状況の確認が必要';
+    if (proposal.status === 'application_queued' && !validQueuedApplication(proposal)) return '応募意思の確認が必要';
     if (proposal.status === 'waiting_to_apply' && !validApplication(proposal)) return '応募条件の確認が必要';
-    if (proposal.status === 'applied' && (!validApplication(proposal) || !proposal.submission_confirmed_at)) return '応募状況の確認が必要';
-    return statuses[proposal.status] || '状況の確認が必要';
+    return proposal.dashboard?.status || statuses[proposal.status];
   }
 
-  function navigate(view) {
-    if (!names[view]) view = 'overview';
-    currentView = view;
-    $$('.view').forEach(element => { element.hidden = element.id !== `view-${view}`; });
-    $$('.nav-item').forEach(button => {
-      const active = button.dataset.view === view;
-      button.classList.toggle('active', active);
-      if (active) button.setAttribute('aria-current', 'page'); else button.removeAttribute('aria-current');
-    });
-    $('#current-view-title').textContent = names[view];
-    document.title = `${names[view]} — LATTE`;
+  function field(label, value, name) {
+    const element = node('dl', `record-field record-${name}`);
+    element.append(node('dt', '', label), node('dd', '', value));
+    return element;
   }
 
-  function trace(conversationId, label = '元の会話を辿る →') {
-    const button = node('button', 'text-button', label);
-    const record = snapshot.conversations.find(item => item.id === conversationId);
-    if (!record) {
-      button.textContent = '元の会話は未反映';
-      button.disabled = true;
-      return button;
+  function row(proposal) {
+    const display = proposal.dashboard || {};
+    const element = node('article', 'record-row');
+    element.dataset.proposalId = proposal.id;
+    const description = display.description || proposal.job?.description || proposal.title;
+    const location = display.location || proposal.job?.location || proposal.location || '未確認';
+    element.append(field('勤務地', location, 'location'), field('仕事内容', description, 'description'), field('今どうなっているか', statusFor(proposal), 'status'));
+    const url = safeURL(display.detail_url || proposal.job?.source_url);
+    if (url) {
+      const link = node('a', 'record-link', '詳細 ↗');
+      link.href = url; link.target = '_blank'; link.rel = 'noopener noreferrer';
+      link.setAttribute('aria-label', `${description}の詳細URLを開く`);
+      element.append(link);
     }
-    button.addEventListener('click', () => {
-      $('#conversation-search').value = '';
-      renderConversations();
-      navigate('conversations');
-      const details = $$('.conversation-card').find(element => element.dataset.recordId === conversationId);
-      if (!details) return;
-      details.open = true;
-      details.classList.add('highlight');
-      requestAnimationFrame(() => { details.scrollIntoView({ block: 'center', behavior: 'smooth' }); $('summary', details).focus({ preventScroll: true }); });
-      setTimeout(() => details.classList.remove('highlight'), 3500);
-    });
-    return button;
-  }
-
-  function proposalCard(proposal, compact = false) {
-    const card = node('article', 'proposal-card');
-    const meta = node('div', 'card-meta');
-    const color = proposal.status === 'awaiting_decision' || proposal.status === 'waiting_to_apply' ? ' waiting' : proposal.status === 'ready_for_review' ? ' ready' : proposal.status === 'deferred' ? ' deferred' : '';
-    meta.append(node('span', 'pill kind', kinds[proposal.kind] || 'ラテの提案'), node('span', 'pill' + color, proposalStatus(proposal)));
-    card.append(meta, node('h3', '', proposal.title), node('p', 'proposal-summary', proposal.summary));
-    if (!compact) {
-      const detail = node('div', 'proposal-detail');
-      if (proposal.recommendation) detail.append(node('h4', '', 'LATTEの提案'), node('p', '', proposal.recommendation));
-      if (proposal.reasons?.length) {
-        detail.append(node('h4', '', 'そう考えた理由'));
-        const list = node('ul'); proposal.reasons.forEach(reason => list.append(node('li', '', reason))); detail.append(list);
-      }
-      if (proposal.unknowns?.length) {
-        detail.append(node('h4', '', 'まだ確認していないこと'));
-        const list = node('ul'); proposal.unknowns.forEach(unknown => list.append(node('li', '', unknown))); detail.append(list);
-      }
-      if (proposal.next_action) detail.append(node('h4', '', '次にできること'), node('p', '', proposal.next_action));
-      const decisions = snapshot.decisions.filter(item => item.proposal_ids?.includes(proposal.id));
-      decisions.forEach(decision => { detail.append(node('h4', '', '本人の判断'), node('p', '', decision.choice)); });
-      (proposal.evidence || []).forEach(evidence => {
-        const conversation = snapshot.conversations.find(item => item.id === evidence.conversation_id);
-        const label = evidence.who === 'assistant' ? 'LATTEの言葉' : conversation && sourceLabel(conversation.source).includes('添付') ? '資料の記載' : '本人の言葉';
-        if (evidence.quote) detail.append(node('blockquote', 'evidence-quote', `${label}：${evidence.quote}`));
-      });
-      card.append(detail);
-    }
-    const footer = node('div', 'proposal-footer');
-    const ids = [...new Set((proposal.evidence || []).map(item => item.conversation_id).filter(Boolean))];
-    if (compact) {
-      const more = node('button', 'text-button', '提案と理由を見る →');
-      more.addEventListener('click', () => { filter = 'all'; renderProposalList(); navigate('proposals'); const target = $$('.proposal-card').find(element => element.dataset.proposalId === proposal.id); target?.scrollIntoView({ behavior: 'smooth', block: 'start' }); });
-      footer.append(more);
-    }
-    ids.forEach((id, index) => footer.append(trace(id, ids.length > 1 ? `会話 ${index + 1} を辿る →` : undefined)));
-    if (!ids.length) footer.append(node('span', 'muted', '会話との紐づけは未記録'));
-    if (proposal.kind === 'job' && proposal.job?.source_url) {
-      try {
-        const url = new URL(proposal.job.source_url);
-        if (['https:', 'http:'].includes(url.protocol)) {
-          const link = node('a', 'text-button', '求人の掲載元を開く ↗');
-          link.href = url.href; link.target = '_blank'; link.rel = 'noopener noreferrer'; footer.append(link);
-        }
-      } catch (_) { /* Stored data never becomes executable URL content. */ }
-    }
-    card.dataset.proposalId = proposal.id;
-    card.append(footer);
-    return card;
-  }
-
-  function renderOverview() {
-    const pending = snapshot.proposals.filter(item => item.status === 'awaiting_decision');
-    const ready = snapshot.documents.filter(item => item.status === 'ready_for_review');
-    const applications = snapshot.proposals.filter(item => item.status === 'waiting_to_apply' && validApplication(item));
-    const setStat = (selector, count) => { $(selector).replaceChildren(document.createTextNode(String(count)), node('small', '', '件')); };
-    setStat('#stat-decisions', pending.length); setStat('#stat-documents', ready.length); setStat('#stat-applications', applications.length);
-    $('#last-updated').textContent = `最終反映 ${formatDate(snapshot.updated_at)} · ${snapshot.coverage?.label || '反映済みの会話'} · ${snapshot.coverage?.record_count ?? snapshot.conversations.length}件`;
-    const focus = $('#next-focus'); focus.replaceChildren();
-    const next = pending[0] || applications[0] || snapshot.proposals.find(item => item.status === 'preparing');
-    if (next) {
-      focus.append(node('h3', '', next.title), node('p', '', next.next_action || next.summary));
-      const button = node('button', 'text-button', '提案の背景を見る →');
-      button.addEventListener('click', () => { filter = 'all'; renderProposalList(); navigate('proposals'); }); focus.append(button);
-    } else if (ready[0]) {
-      focus.append(node('h3', '', ready[0].title), node('p', '', 'ラテが用意した内容を、余裕のあるときに確認できます。判断や修正の相談は、いつものチャットで。'));
-      const button = node('button', 'text-button', '用意したものを見る →'); button.addEventListener('click', () => navigate('proposals')); focus.append(button);
-    } else focus.append(node('p', '', '今すぐ決めることはありません。いつものチャットで話したことを、LATTEが反映したらここで確認できます。'));
-    const proposals = $('#overview-proposals'); proposals.replaceChildren();
-    const active = snapshot.proposals.filter(item => !['deferred', 'applied'].includes(item.status)).slice(0, 3);
-    if (!active.length) proposals.append(empty('まだ、急いで決めることはありません。', 'ラテから提案したことが反映されると、ここに理由と一緒に並びます。'));
-    active.forEach(item => proposals.append(proposalCard(item, true)));
-    const decisions = $('#recent-decisions'); decisions.replaceChildren();
-    if (!snapshot.decisions.length) decisions.append(node('p', 'quiet-note', '本人が決めたことは、まだ記録されていません。提案と決定は分けて扱います。'));
-    snapshot.decisions.slice(-3).reverse().forEach(decision => {
-      const card = node('article', 'decision-item');
-      card.append(node('h3', '', decision.title), node('p', 'decision-choice', decision.choice));
-      if (decision.reason) card.append(node('p', 'decision-reason', decision.reason));
-      (decision.conversation_ids || []).slice(0, 1).forEach(id => card.append(trace(id)));
-      decisions.append(card);
-    });
-    const activities = $('#recent-activities'); activities.replaceChildren();
-    if (!snapshot.activities.length) activities.append(node('p', 'quiet-note', '作業の進み具合が反映されると、ここに残ります。'));
-    snapshot.activities.slice(-6).reverse().forEach(activity => {
-      const item = node('article', 'activity-item');
-      item.append(node('time', '', formatDate(activity.at, true)), node('p', '', activity.text));
-      if (activity.conversation_id) item.append(trace(activity.conversation_id));
-      activities.append(item);
-    });
-  }
-
-  function renderConversations() {
-    const coverage = snapshot.coverage || {};
-    $('#coverage-description').textContent = coverage.description || 'この環境のLATTEが反映した会話を表示しています。';
-    $('#coverage-meta').textContent = `${coverage.record_count ?? snapshot.conversations.length}件 · 最終記録 ${formatDate(coverage.last_recorded_at || snapshot.updated_at)}`;
-    const search = $('#conversation-search').value.trim().toLocaleLowerCase('ja-JP');
-    const conversations = snapshot.conversations.filter(record => !search || [record.title, record.user_text, record.assistant_text, record.summary, ...(record.tags || [])].join(' ').toLocaleLowerCase('ja-JP').includes(search));
-    $('#conversation-count').textContent = `${conversations.length}件の記録${search ? ` / 全${snapshot.conversations.length}件` : ''}`;
-    const list = $('#conversation-list'); list.replaceChildren();
-    if (!conversations.length) list.append(empty(search ? 'その言葉を含む会話はありません。' : '会話は、まだ反映されていません。', search ? 'ほかの言葉で探してみてください。' : '反映された会話から、提案や判断の理由を辿れるようになります。'));
-    conversations.slice().reverse().forEach(record => {
-      const details = node('details', 'conversation-card'); details.dataset.recordId = record.id;
-      const summary = node('summary');
-      const kind = record.kind === 'summary' ? '要約' : record.kind === 'quoted_excerpt' ? '原文の抜粋' : '記録したやりとり';
-      summary.append(node('h3', '', record.title));
-      const meta = node('div', 'conversation-meta');
-      meta.append(node('span', '', formatDate(record.at)), node('span', '', sourceLabel(record.source)), node('span', '', kind));
-      summary.append(meta);
-      if (record.tags?.length) { const tags = node('div', 'tags'); record.tags.forEach(tag => tags.append(node('span', 'tag', tag))); summary.append(tags); }
-      const body = node('div', 'conversation-content');
-      if (record.kind === 'summary') {
-        body.append(node('h4', '', 'LATTEによる要約（原文ではありません）'), node('p', 'summary-text', record.summary || '要約文は未記録です。'));
-      } else if (record.summary) body.append(node('h4', '', 'この会話のポイント（要約）'), node('p', 'summary-text', record.summary));
-      if (record.user_text) body.append(node('h4', '', sourceLabel(record.source).includes('添付') ? '資料の記載' : 'あなたの言葉'), node('div', 'transcript-text user', record.user_text));
-      if (record.assistant_text) body.append(node('h4', '', 'LATTEの返答'), node('div', 'transcript-text', record.assistant_text));
-      const related = snapshot.proposals.filter(proposal => proposal.evidence?.some(evidence => evidence.conversation_id === record.id));
-      if (related.length) {
-        body.append(node('h4', '', 'この会話につながる提案'));
-        related.forEach(proposal => {
-          const button = node('button', 'text-button', `${proposal.title} →`);
-          button.addEventListener('click', () => { filter = 'all'; renderProposalList(); navigate('proposals'); const target = $$('.proposal-card').find(element => element.dataset.proposalId === proposal.id); target?.scrollIntoView({ block: 'center', behavior: 'smooth' }); });
-          body.append(button);
-        });
-      }
-      details.append(summary, body); list.append(details);
-    });
-  }
-
-  function renderProposalList() {
-    $$('.filter-row button').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.filter === filter)));
-    const list = $('#proposal-list'); list.replaceChildren();
-    const proposals = snapshot.proposals.filter(proposal => filter === 'all' || filter === 'preparing' && ['approved', 'preparing', 'ready_for_review'].includes(proposal.status) || filter === 'waiting_to_apply' && proposal.status === filter && validApplication(proposal) || filter === 'awaiting_decision' && proposal.status === filter);
-    if (!proposals.length) list.append(empty(filter === 'waiting_to_apply' ? '応募の判断待ちは、まだありません。' : 'ここに該当する提案はありません。', filter === 'waiting_to_apply' ? '実在する求人と準備が揃ったものだけを表示します。書類準備と応募済みは別に扱います。' : '記録していない提案や作業を、進行中として表示することはありません。'));
-    proposals.forEach(proposal => list.append(proposalCard(proposal)));
-    const documents = $('#document-list'); documents.replaceChildren();
-    if (!snapshot.documents.length) documents.append(empty('書類は、まだ用意されていません。', 'このチャットでLATTEが作ったものを、確認が必要な点と一緒にここへ残します。'));
-    snapshot.documents.forEach(documentRecord => {
-      const card = node('article', 'document-card');
-      const meta = node('div', 'card-meta'); meta.append(node('span', 'pill kind', 'LATTEが準備したもの'), node('span', 'pill ready', documentRecord.status === 'ready_for_review' ? '本人の確認待ち・未提出' : '下書き・未提出'));
-      card.append(meta, node('h3', '', documentRecord.title), node('div', 'document-body', documentRecord.body));
-      const actions = node('div', 'document-actions');
-      (documentRecord.conversation_ids || []).forEach(id => actions.append(trace(id)));
-      const download = node('button', 'text-button', 'テキストを保存 ↓');
-      download.addEventListener('click', () => {
-        const blob = new Blob([`${documentRecord.title}\n\n${documentRecord.body}`], { type: 'text/plain;charset=utf-8' });
-        const url = URL.createObjectURL(blob); const anchor = document.createElement('a'); anchor.href = url; anchor.download = 'LATTE-preparation.txt'; anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
-      });
-      actions.append(download); card.append(actions); documents.append(card);
-    });
-  }
-
-  function renderProfile() {
-    const preferences = snapshot.profile.preferences || {};
-    const list = $('#preference-list'); list.replaceChildren();
-    const rows = [['location', '勤務地・エリア', value => value], ['commute_minutes', '通勤の上限', value => `片道${value}分`], ['remote_days', '最低希望の在宅日数', value => `週${value}日`], ['min_monthly_salary', '月額額面給与の最低希望', value => `${Number(value).toLocaleString('ja-JP')}円`], ['employment', '希望の雇用形態', value => value], ['overtime_hours', '残業の上限', value => `月${value}時間`]];
-    rows.forEach(([key, label, format]) => {
-      const item = node('dl', 'preference-item'); const value = preferences[key];
-      item.append(node('dt', '', label), node('dd', '', value == null || value === '' ? 'まだ確定していません' : format(value))); list.append(item);
-    });
-    const facts = $('#fact-list'); facts.replaceChildren();
-    if (!snapshot.profile.facts.length) facts.append(empty('プロフィールは、まだ反映されていません。', 'このチャットで把握したことを、出典と未確認の点を分けて記録します。'));
-    const labels = { confirmed: '確認済み', reported: '本人の申告', unknown: '未確認' };
-    snapshot.profile.facts.forEach(fact => {
-      const card = node('article', 'fact-card'); const meta = node('div', 'card-meta');
-      meta.append(node('h3', '', fact.label), node('span', 'pill', labels[fact.status] || '記録'));
-      card.append(meta, node('p', '', fact.value));
-      if (fact.source) card.append(node('p', 'fact-source', `出典：${sourceLabel(fact.source)}`));
-      facts.append(card);
-    });
+    return element;
   }
 
   function renderAll() {
-    renderOverview(); renderConversations(); renderProposalList(); renderProfile();
-    $('#revision').textContent = `記録 v${snapshot.revision}`;
+    for (const group of groups) {
+      const list = $(`#list-${group}`);
+      list.replaceChildren();
+      const records = snapshot.proposals.filter(proposal => groupFor(proposal) === group);
+      if (!records.length) list.append(node('p', 'empty-state', 'まだありません'));
+      records.forEach(proposal => list.append(row(proposal)));
+    }
+    $('#last-updated').textContent = `最終更新 ${formatDate(snapshot.updated_at)}`;
   }
 
   function showNotice(message, error = false) {
-    const notice = $('#workspace-notice'); notice.textContent = message; notice.classList.toggle('error', error); notice.hidden = !message;
+    const notice = $('#workspace-notice');
+    notice.textContent = message;
+    notice.classList.toggle('error', error);
+    notice.hidden = !message;
   }
 
   function locked(title, detail, retry = false) {
-    $('#locked-screen').hidden = false; $('#workspace').hidden = true;
-    $('#locked-status-title').textContent = title; $('#locked-status-detail').textContent = detail;
+    $('#locked-screen').hidden = false;
+    $('#workspace').hidden = true;
+    $('#locked-status-title').textContent = title;
+    $('#locked-status-detail').textContent = detail;
     $('#locked-retry').hidden = !retry;
   }
 
@@ -325,8 +176,18 @@
       for (const key of ['summary', 'recommendation', 'next_action', 'submission_confirmed_at']) string(item, key);
       if (!['approach', 'job', 'document'].includes(item.kind) || !Object.hasOwn(statuses, item.status)) fail();
       strings(item, 'reasons'); strings(item, 'unknowns');
+      if (Object.hasOwn(item, 'display_group') && item.display_group !== null && !groups.includes(item.display_group)) fail();
+      string(item, 'location');
+      if (item.dashboard != null) {
+        if (!object(item.dashboard)) fail();
+        for (const key of ['location', 'description', 'status', 'detail_url']) string(item.dashboard, key);
+      }
       if (item.packet_ready != null && typeof item.packet_ready !== 'boolean') fail();
-      if (item.job != null) { if (!object(item.job)) fail(); string(item.job, 'source_url'); string(item.job, 'verified_at'); }
+      if (item.user_decision != null) {
+        if (!object(item.user_decision)) fail();
+        for (const key of ['choice', 'conversation_id', 'quote']) string(item.user_decision, key, true);
+      }
+      if (item.job != null) { if (!object(item.job)) fail(); for (const key of ['source_url', 'verified_at', 'location', 'description']) string(item.job, key); }
       if (item.evidence != null) {
         if (!Array.isArray(item.evidence)) fail();
         item.evidence.forEach(evidence => { if (!object(evidence)) fail(); string(evidence, 'conversation_id', true); string(evidence, 'quote'); string(evidence, 'who'); });
@@ -353,8 +214,10 @@
     const generation = ++requestGeneration;
     const requestedKey = keyValue;
     activeRequest = new AbortController();
-    loading = true; $('#refresh').disabled = true; $('#locked-retry').disabled = true;
-    if (!snapshot) locked('記録を開いています', '暗号化された記録を、この端末で復号しています。');
+    loading = true;
+    $('#refresh').disabled = true;
+    $('#locked-retry').disabled = true;
+    if (!snapshot) locked('記録を開いています', 'この端末で記録を復号しています。');
     try {
       if (!window.crypto?.subtle) throw new Error('crypto');
       let rawKey;
@@ -379,45 +242,37 @@
       try {
         decrypted = validateSnapshot(JSON.parse(new TextDecoder().decode(plain)));
         if (demoMode && decrypted.demo !== true || !demoMode && decrypted.demo === true) throw new Error('snapshot');
-      }
-      catch (_) { throw new Error('snapshot'); }
+      } catch (_) { throw new Error('snapshot'); }
       if (generation !== requestGeneration || requestedKey !== keyValue) return;
-      snapshot = decrypted; lastFetched = new Date();
-      keySaved = true;
+      snapshot = decrypted;
+      lastFetched = new Date();
+      let keySaved = true;
       if (!demoMode) { try { localStorage.setItem(storageKey, requestedKey); } catch (_) { keySaved = false; } }
-      $('#locked-screen').hidden = true; $('#workspace').hidden = false;
+      $('#locked-screen').hidden = true;
+      $('#workspace').hidden = false;
       $('#demo-banner').hidden = !demoMode;
-      renderAll(); navigate(currentView);
-      if (demoMode) {
-        const panel = $('.connection-panel');
-        $('h2', panel).textContent = '画面例について';
-        $('p', panel).textContent = 'この画面の人物・会話・提案はすべて架空です。あなたの専用リンクの鍵は読み込まず、保存や変更もしません。';
-        $('.fine-print', panel).textContent = '実際の記録は、暗号化データの保存方法を確認した後に反映します。';
-        $('#disconnect').hidden = true;
-      } else {
-        const panel = $('.connection-panel');
-        $('p', panel).textContent = keySaved ? '専用リンクの鍵を、このブラウザーに保存しています。記録の内容自体はブラウザーに保存せず、開くたびに復号して表示します。' : '専用リンクの鍵は、今開いている画面の中だけで保持しています。この端末への接続保存に失敗したため、次回は専用リンクから開いてください。';
-      }
-      $('#sync-badge').textContent = `最終確認 ${formatDate(lastFetched.toISOString(), true)}`;
-      showNotice(keySaved ? '' : 'この端末の接続を保存できません。次回は専用リンクから開いてください。今回の記録は表示できます。');
+      $('#disconnect').hidden = demoMode;
+      renderAll();
+      showNotice(keySaved ? '' : 'この端末の接続を保存できません。次回は専用リンクから開いてください。');
     } catch (error) {
       if (generation !== requestGeneration || requestedKey !== keyValue) return;
       const messages = {
-        missing: ['記録の反映を準備しています', '暗号化した記録は、まだ公開されていません。LATTEがこのチャットで案内するまでお待ちください。'],
-        network: ['記録を取得できませんでした', '通信状態やサイトの公開状況を確認して、もう一度お試しください。'],
-        key: ['この専用リンクでは開けませんでした', 'リンクの鍵が違うか、記録を確認できません。LATTEから案内された最新の専用リンクを開いてください。'],
+        missing: ['記録の反映を準備しています', 'LATTEからの反映をお待ちください。'],
+        network: ['記録を取得できませんでした', '通信状態を確認して、もう一度お試しください。'],
+        key: ['この専用リンクでは開けませんでした', 'このチャットでお渡しした最新の専用リンクを開いてください。'],
         crypto: ['このブラウザーでは開けません', 'HTTPSのサイトを、最新版のSafariまたはChromeで開いてください。'],
-        snapshot: ['記録の形式を確認できませんでした', '記録を安全に表示できないため開きませんでした。LATTEにこの表示を伝えてください。'],
-        format: ['配信された記録を確認できませんでした', '暗号化データの形式を確認できません。しばらくして更新するか、LATTEにこの表示を伝えてください。']
+        snapshot: ['記録を確認できませんでした', '安全に表示できないため開きませんでした。この表示をLATTEへ伝えてください。'],
+        format: ['記録を確認できませんでした', 'しばらくして更新するか、この表示をLATTEへ伝えてください。']
       };
       const [title, detail] = messages[error.message] || messages.format;
-      if (snapshot) {
-        $('#sync-badge').textContent = '最新の取得に失敗';
-        showNotice(`${title}。${detail} 今は${formatDate(lastFetched.toISOString(), true)}に取得した記録を表示しています。`, true);
-      } else locked(title, detail, ['network', 'missing', 'format', 'snapshot'].includes(error.message));
+      if (snapshot) showNotice(`更新できませんでした。${formatDate(lastFetched.toISOString())}に取得した記録を表示しています。`, true);
+      else locked(title, detail, ['network', 'missing', 'format', 'snapshot'].includes(error.message));
     } finally {
       if (generation === requestGeneration) {
-        loading = false; activeRequest = null; $('#refresh').disabled = false; $('#locked-retry').disabled = false;
+        loading = false;
+        activeRequest = null;
+        $('#refresh').disabled = false;
+        $('#locked-retry').disabled = false;
       }
     }
   }
@@ -427,10 +282,10 @@
     activeRequest?.abort(); activeRequest = null; loading = false;
     snapshot = null; lastFetched = null;
     $('#refresh').disabled = false; $('#locked-retry').disabled = false;
-    for (const selector of ['#next-focus', '#overview-proposals', '#recent-decisions', '#recent-activities', '#conversation-list', '#proposal-list', '#document-list', '#preference-list', '#fact-list']) $(selector).replaceChildren();
-    $('#conversation-search').value = ''; $('#workspace-notice').textContent = ''; $('#coverage-description').textContent = ''; $('#coverage-meta').textContent = '';
-    $('#last-updated').textContent = ''; $('#conversation-count').textContent = ''; $('#revision').textContent = '';
-    for (const selector of ['#stat-decisions', '#stat-documents', '#stat-applications']) $(selector).replaceChildren(document.createTextNode('0'), node('small', '', '件'));
+    groups.forEach(group => $(`#list-${group}`).replaceChildren());
+    $('#workspace-notice').textContent = '';
+    $('#workspace-notice').hidden = true;
+    $('#last-updated').textContent = '';
   }
 
   function disconnect() {
@@ -439,22 +294,19 @@
     try { localStorage.removeItem(storageKey); } catch (_) { removed = false; }
     keyValue = null;
     clearPrivateDisplay();
-    locked(removed ? 'この端末の接続を解除しました' : '現在の記録表示を閉じました', removed ? 'もう一度記録を見るときは、このチャットで渡した専用リンクを開いてください。' : 'ブラウザーに保存された鍵の削除は確認できませんでした。完全に接続を消すには、このサイトのブラウザーデータを削除してください。');
+    locked(removed ? 'この端末の接続を解除しました' : '現在の表示を閉じました', removed ? '再び開くときは、このチャットで渡した専用リンクを使ってください。' : '保存された鍵の削除は確認できませんでした。接続を消すには、このサイトのブラウザーデータを削除してください。');
     window.scrollTo({ top: 0 });
   }
 
-  $$('.nav-item').forEach(button => button.addEventListener('click', () => { navigate(button.dataset.view); window.scrollTo({ top: 0 }); }));
-  $$('[data-go]').forEach(button => button.addEventListener('click', () => navigate(button.dataset.go)));
-  $('#coverage-link').addEventListener('click', () => navigate('conversations'));
-  $('#conversation-search').addEventListener('input', () => { if (snapshot) renderConversations(); });
-  $$('.filter-row button').forEach(button => button.addEventListener('click', () => { filter = button.dataset.filter; renderProposalList(); }));
-  $('#refresh').addEventListener('click', retrieve); $('#locked-retry').addEventListener('click', retrieve); $('#disconnect').addEventListener('click', disconnect);
+  $('#refresh').addEventListener('click', retrieve);
+  $('#locked-retry').addEventListener('click', retrieve);
+  $('#disconnect').addEventListener('click', disconnect);
   document.addEventListener('visibilitychange', () => { if (!demoMode && !document.hidden && keyValue && lastFetched && Date.now() - lastFetched.getTime() > 60000) retrieve(); });
   setInterval(() => { if (!demoMode && !document.hidden && keyValue) retrieve(); }, 120000);
 
   function consumePrivateFragment() {
     const provided = new URLSearchParams(location.hash.slice(1)).get('key');
-    // A private URL's fragment never goes to the server. Remove it from the address bar immediately.
+    // Fragments are not sent in HTTP requests. Clear the private key from the address bar immediately.
     if (location.hash) history.replaceState(null, '', location.pathname + location.search);
     return provided;
   }

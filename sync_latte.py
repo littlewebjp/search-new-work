@@ -11,7 +11,9 @@ from contextlib import contextmanager
 from copy import deepcopy
 from datetime import date, datetime, timezone
 import fcntl
+import hashlib
 import json
+import mimetypes
 import os
 from pathlib import Path
 import re
@@ -26,9 +28,11 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 ROOT = Path(__file__).resolve().parent
 AAD = b"LATTE workspace v1"
-COLLECTIONS = ("conversations", "proposals", "decisions", "documents", "activities")
+COLLECTIONS = ("conversations", "proposals", "decisions", "documents", "activities", "assets")
 SITE_URL = "https://littlewebjp.github.io/search-new-work/"
 MAX_WORKSPACE_BYTES = 8_000_000
+MAX_ASSET_BYTES = 25 * 1024 * 1024
+ASSET_AAD = b"LATTE asset v1:"
 
 
 class SyncError(ValueError):
@@ -84,6 +88,8 @@ def _https(value):
 def validate_snapshot(s):
     if not isinstance(s, dict) or s.get("schema_version") != 1:
         raise SyncError("Unsupported workspace format")
+    # Older snapshots predate the private vault; normalize in memory only.
+    s.setdefault("assets", [])
     if type(s.get("revision")) is not int or s["revision"] < 0:
         raise SyncError("Invalid workspace revision")
     _timestamp(s["updated_at"], "updated_at")
@@ -140,8 +146,24 @@ def validate_snapshot(s):
         for key in ("title", "summary", "recommendation", "next_action"):
             _string(row.get(key), f"proposal.{key}", required=key == "title")
         if row.get("kind") not in {"approach", "job", "document"} or row.get("status") not in {
-                "awaiting_decision", "approved", "preparing", "ready_for_review", "waiting_to_apply", "applied", "deferred"}:
+                "new_proposal", "awaiting_decision", "approved", "preparing", "ready_for_review", "application_queued", "waiting_to_apply", "applied", "deferred"}:
             raise SyncError("Invalid proposal kind or status")
+        if "display_group" in row:
+            group = row["display_group"]
+            allowed = {"new": {"new_proposal"}, "decision": {"awaiting_decision", "approved", "preparing", "ready_for_review", "waiting_to_apply"},
+                       "deferred": {"deferred"}, "applied": {"application_queued", "waiting_to_apply", "applied"}}
+            if group is not None and (not isinstance(group, str) or group not in allowed or row["status"] not in allowed[group]):
+                raise SyncError("Dashboard group must match the actual proposal status")
+        if "dashboard" in row:
+            dashboard = row["dashboard"]
+            if not isinstance(dashboard, dict) or set(dashboard) - {"location", "description", "status", "detail_url"}:
+                raise SyncError("Invalid dashboard fields")
+            for key, value in dashboard.items():
+                _string(value, f"dashboard.{key}", required=False)
+            if dashboard.get("detail_url") and not _https(dashboard["detail_url"]):
+                raise SyncError("Dashboard detail URL must be an http(s) URL without credentials")
+            if any(word in dashboard.get("status", "") for word in ("応募中", "応募済")) and row["status"] != "applied":
+                raise SyncError("An application label requires confirmed submission")
         _strings(row.get("reasons", []), "proposal.reasons")
         _strings(row.get("unknowns", []), "proposal.unknowns")
         evidence = row.get("evidence", [])
@@ -154,11 +176,20 @@ def validate_snapshot(s):
             target = conversations[ref["conversation_id"]].get(ref["who"] + "_text", "")
             if ref["quote"] not in target:
                 raise SyncError("Evidence quote is not present in the referenced speaker's text")
-        if row["status"] in {"waiting_to_apply", "applied"}:
+        if row["status"] in {"application_queued", "waiting_to_apply", "applied"}:
             job = row.get("job", {})
-            if row["kind"] != "job" or not isinstance(job, dict) or not _https(job.get("source_url")) or row.get("packet_ready") is not True:
-                raise SyncError("Application states require a sourced job and completed preparation packet")
+            if row["kind"] != "job" or not isinstance(job, dict) or not _https(job.get("source_url")):
+                raise SyncError("Application states require an actual sourced job")
             _timestamp(job.get("verified_at"), "job.verified_at")
+            if row["status"] == "application_queued":
+                decision = row.get("user_decision")
+                if not isinstance(decision, dict) or decision.get("choice") != "yes" or decision.get("conversation_id") not in conversations:
+                    raise SyncError("Queued applications require an explicit recorded yes decision")
+                _string(decision.get("quote"), "user_decision.quote")
+                if decision["quote"] not in conversations[decision["conversation_id"]].get("user_text", ""):
+                    raise SyncError("Application decision quote is not present in the recorded user's words")
+            elif row.get("packet_ready") is not True:
+                raise SyncError("Application submission decisions require a completed preparation packet")
             if row["status"] == "applied":
                 _timestamp(row.get("submission_confirmed_at"), "submission_confirmed_at")
     def references(row, collection, field):
@@ -188,6 +219,20 @@ def validate_snapshot(s):
         for key, collection in (("conversation_id", "conversations"), ("proposal_id", "proposals")):
             if row.get(key) and row[key] not in ids[collection]:
                 raise SyncError(f"Unknown activity {key}")
+    for asset in s["assets"]:
+        if not re.fullmatch(r"[0-9a-f]{32}", asset["id"]):
+            raise SyncError("Invalid asset id")
+        for key in ("title", "filename", "mime_type", "sha256"):
+            _string(asset.get(key), f"asset.{key}")
+        if asset["filename"] in {".", ".."} or any(c in asset["filename"] for c in ("/", "\\", "\x00")):
+            raise SyncError("Invalid archived filename")
+        if not re.fullmatch(r"[0-9a-f]{64}", asset["sha256"]):
+            raise SyncError("Invalid asset checksum")
+        if type(asset.get("size")) is not int or not 0 <= asset["size"] <= MAX_ASSET_BYTES:
+            raise SyncError("Archived files must be at most 25 MB")
+        _timestamp(asset.get("at"), "asset.at")
+        if asset.get("conversation_id") is not None and asset["conversation_id"] not in conversations:
+            raise SyncError("Unknown asset conversation reference")
     if coverage["record_count"] != len(s["conversations"]):
         raise SyncError("coverage.record_count must match the recorded conversations")
     try:
@@ -322,6 +367,108 @@ class WorkspaceSync:
                 self._write(self.workspace_path, updated)
             return updated
 
+    def _vault_dir(self):
+        vault = self.data_dir / "vault"
+        if vault.is_symlink() or (vault.exists() and not vault.is_dir()):
+            raise SyncError("Invalid private vault directory; existing files were preserved")
+        vault.mkdir(mode=0o700, exist_ok=True)
+        os.chmod(vault, 0o700)
+        return vault
+
+    def archive_file(self, path, title, conversation_id=None):
+        """Copy a user-provided file into the private vault; no publication occurs."""
+        _string(title, "asset.title")
+        source = Path(path)
+        filename = source.name
+        if not filename or filename in {".", ".."} or any(c in filename for c in ("\\", "\x00")):
+            raise SyncError("Invalid archived filename")
+        source_fd = None
+        try:
+            source_fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            before = os.fstat(source_fd)
+        except OSError:
+            if source_fd is not None:
+                os.close(source_fd)
+            raise SyncError("Unable to read the source file; use an existing regular file, not a symlink") from None
+        if not stat.S_ISREG(before.st_mode) or before.st_size > MAX_ASSET_BYTES:
+            os.close(source_fd)
+            raise SyncError("Archive accepts regular files up to 25 MB")
+        with os.fdopen(source_fd, "rb") as incoming:
+            with self.lock():
+                snapshot = self._read()
+                if conversation_id is not None and conversation_id not in {c["id"] for c in snapshot["conversations"]}:
+                    raise SyncError("Unknown asset conversation reference")
+                asset_id = uuid4().hex
+                destination = self._vault_dir() / (asset_id + ".bin")
+                try:
+                    fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                except OSError:
+                    raise SyncError("Cannot create an archive entry; existing files were preserved") from None
+                try:
+                    digest = hashlib.sha256()
+                    size = 0
+                    with os.fdopen(fd, "wb") as outgoing:
+                        while chunk := incoming.read(1024 * 1024):
+                            size += len(chunk)
+                            if size > MAX_ASSET_BYTES:
+                                raise SyncError("Source file exceeds the 25 MB archive limit")
+                            digest.update(chunk)
+                            outgoing.write(chunk)
+                        outgoing.flush()
+                        os.fsync(outgoing.fileno())
+                    after = os.fstat(incoming.fileno())
+                    if size != before.st_size or after.st_size != before.st_size or after.st_mtime_ns != before.st_mtime_ns:
+                        raise SyncError("Source file changed while archiving; retry when it is no longer being edited")
+                    asset = {"id": asset_id, "title": title, "filename": filename, "size": size,
+                             "sha256": digest.hexdigest(), "at": now(), "conversation_id": conversation_id,
+                             "mime_type": mimetypes.guess_type(filename)[0] or "application/octet-stream"}
+                    snapshot["assets"].append(asset)
+                    snapshot["revision"] += 1
+                    snapshot["updated_at"] = now()
+                    validate_snapshot(snapshot)
+                    self._write(self.workspace_path, snapshot)
+                    return deepcopy(asset)
+                except Exception:
+                    destination.unlink(missing_ok=True)
+                    raise
+
+    def _asset_bytes(self, asset):
+        raw = self._vault_dir() / (asset["id"] + ".bin")
+        try:
+            fd = os.open(raw, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(fd, "rb") as file:
+                info = os.fstat(file.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_size != asset["size"]:
+                    raise SyncError("Archived file size differs from its recorded metadata")
+                content = file.read(MAX_ASSET_BYTES + 1)
+        except OSError:
+            raise SyncError("The archived file is missing or unsafe; restore the original private vault") from None
+        if len(content) != asset["size"] or hashlib.sha256(content).hexdigest() != asset["sha256"]:
+            raise SyncError("Archived file integrity check failed; existing files were preserved")
+        return content
+
+    def extract_asset(self, asset_id, output_path):
+        """Export an integrity-checked original to a new explicit path; never overwrite."""
+        with self.lock():
+            asset = next((a for a in self._read()["assets"] if a["id"] == asset_id), None)
+            if asset is None:
+                raise SyncError("Archived asset was not found")
+            content = self._asset_bytes(asset)
+            destination = Path(output_path)
+            try:
+                fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            except OSError:
+                raise SyncError("Choose a new output path in an existing directory; no file was overwritten") from None
+            try:
+                with os.fdopen(fd, "wb") as file:
+                    file.write(content)
+                    file.flush()
+                    os.fsync(file.fileno())
+            except Exception:
+                destination.unlink(missing_ok=True)
+                raise
+            return destination
+
     def consent(self):
         """Call only after the owner explicitly approves public encrypted storage."""
         with self.lock():
@@ -348,6 +495,20 @@ class WorkspaceSync:
             "format": "latte-encrypted-v1", "algorithm": "AES-256-GCM",
             "nonce": base64.b64encode(nonce).decode(), "ciphertext": base64.b64encode(ciphertext).decode(),
         })
+        if snapshot["assets"]:
+            vault = output / "vault"
+            if vault.is_symlink() or (vault.exists() and not vault.is_dir()):
+                raise SyncError("Invalid encrypted asset output directory")
+            vault.mkdir(mode=0o700, exist_ok=True)
+            for asset in snapshot["assets"]:
+                asset_nonce = secrets.token_bytes(12)
+                encrypted = AESGCM(self._key()).encrypt(
+                    asset_nonce, self._asset_bytes(asset), ASSET_AAD + asset["id"].encode())
+                self._write(vault / (asset["id"] + ".enc.json"), {
+                    "format": "latte-asset-v1", "algorithm": "AES-256-GCM",
+                    "nonce": base64.b64encode(asset_nonce).decode(),
+                    "ciphertext": base64.b64encode(encrypted).decode(),
+                })
         self._write_bytes(output / ".nojekyll", b"")
         return output, snapshot["revision"]
 
@@ -385,9 +546,14 @@ class WorkspaceSync:
                     self._git("fetch", "--no-tags", self.remote, f"{parent}:{temporary_ref}")
                     env = {**os.environ, "GIT_INDEX_FILE": str(Path(folder) / "index")}
                     self._git("read-tree", parent, env=env)
-                    for path in sorted(output.iterdir()):
+                    for path in sorted(output.rglob("*")):
+                        if path.is_symlink():
+                            raise SyncError("Unexpected symlink in publication bundle")
+                        if path.is_dir():
+                            continue
+                        relative = path.relative_to(output).as_posix()
                         blob = self._git("hash-object", "-w", str(path))
-                        self._git("update-index", "--add", "--cacheinfo", f"100644,{blob},{path.name}", env=env)
+                        self._git("update-index", "--add", "--cacheinfo", f"100644,{blob},{relative}", env=env)
                     tree = self._git("write-tree", env=env)
                     commit = self._git("-c", "user.name=LATTE", "-c", "user.email=latte@localhost", "commit-tree",
                                        tree, "-p", parent, input=f"Update encrypted LATTE workspace revision {revision}\n")
@@ -413,6 +579,7 @@ class WorkspaceSync:
                 publication = {}
             return {"revision": snapshot["revision"], "record_count": len(snapshot["conversations"]),
                     "proposal_count": len(snapshot["proposals"]), "document_count": len(snapshot["documents"]),
+                    "asset_count": len(snapshot["assets"]),
                     "last_published_revision": publication.get("last_published_revision"),
                     "commit": publication.get("commit"), "deployment_verified": False}
 
@@ -424,6 +591,13 @@ def main():
     commands = parser.add_subparsers(dest="command", required=True)
     record = commands.add_parser("record")
     record.add_argument("--input", required=True)
+    archive = commands.add_parser("archive", help="Archive a private user-provided file, at most 25 MB")
+    archive.add_argument("--file", required=True)
+    archive.add_argument("--title", required=True)
+    archive.add_argument("--conversation-id")
+    extract = commands.add_parser("extract", help="Export a verified original to a new explicit path")
+    extract.add_argument("--asset-id", required=True)
+    extract.add_argument("--output", required=True)
     build = commands.add_parser("build")
     build.add_argument("--output-dir")
     grant = commands.add_parser("consent")
@@ -442,6 +616,10 @@ def main():
             sync.record(payload)
         elif args.command == "build":
             sync.build(args.output_dir)
+        elif args.command == "archive":
+            sync.archive_file(args.file, args.title, args.conversation_id)
+        elif args.command == "extract":
+            sync.extract_asset(args.asset_id, args.output)
         elif args.command == "consent":
             sync.consent()
         elif args.command == "publish":

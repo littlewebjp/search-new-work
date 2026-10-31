@@ -1,5 +1,6 @@
 import base64
 from copy import deepcopy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -12,7 +13,7 @@ from unittest.mock import patch
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from sync_latte import AAD, MAX_WORKSPACE_BYTES, SyncError, WorkspaceSync
+from sync_latte import AAD, ASSET_AAD, MAX_ASSET_BYTES, MAX_WORKSPACE_BYTES, SyncError, WorkspaceSync
 
 AT = '2026-10-31T09:00:00+09:00'
 
@@ -125,6 +126,148 @@ class WorkspaceTests(unittest.TestCase):
         proposal['submission_confirmed_at'] = AT
         self.assertEqual(self.sync.record(payload)['proposals'][0]['status'], 'applied')
 
+    def test_queued_application_records_yes_before_packet_is_ready(self):
+        payload = sample()
+        proposal = payload['proposals'][0]
+        proposal.update(kind='job', status='application_queued', display_group='applied',
+                        job={'source_url': 'https://example.invalid/test-job', 'verified_at': AT},
+                        dashboard={'location': 'Synthetic city', 'description': 'Illustration work', 'status': '応募待ち', 'detail_url': 'https://example.invalid/test-job'})
+        with self.assertRaises(SyncError):
+            self.sync.record(payload)
+        proposal['user_decision'] = {'choice': 'yes', 'conversation_id': 'c1', 'quote': 'An invented yes'}
+        with self.assertRaises(SyncError):
+            self.sync.record(payload)
+        payload['conversations'][0]['user_text'] += '\n○ This one, please prepare.'
+        proposal['user_decision']['quote'] = '○ This one, please prepare.'
+        result = self.sync.record(payload)
+        self.assertFalse(result['proposals'][0].get('packet_ready', False))
+        self.assertEqual(result['proposals'][0]['status'], 'application_queued')
+        proposal['status'] = 'applied'
+        with self.assertRaises(SyncError):
+            self.sync.record(payload)
+        self.assertEqual(self.sync.read(), result)
+
+    def test_minimal_dashboard_fields_and_groups_cannot_fake_submission(self):
+        payload = sample()
+        row = payload['proposals'][0]
+        row.update(status='new_proposal', display_group='new', dashboard={'location': 'Unconfirmed', 'description': 'A potential direction', 'status': '新しい提案', 'detail_url': ''})
+        self.assertEqual(self.sync.record(payload)['proposals'][0]['display_group'], 'new')
+        for group in ('applied', 'deferred', 'unknown', [], 1):
+            row['display_group'] = group
+            with self.assertRaises(SyncError):
+                self.sync.record(payload)
+        row['display_group'] = None
+        self.assertIsNone(self.sync.record(payload)['proposals'][0]['display_group'])
+        row['dashboard']['detail_url'] = 'https://user:password@example.invalid/job'
+        with self.assertRaises(SyncError):
+            self.sync.record(payload)
+        row['dashboard']['detail_url'] = 'javascript:alert(1)'
+        with self.assertRaises(SyncError):
+            self.sync.record(payload)
+        row['dashboard']['detail_url'] = ''
+        row['dashboard']['status'] = '応募中'
+        with self.assertRaises(SyncError):
+            self.sync.record(payload)
+        row['dashboard']['status'] = '新しい提案'
+        row['dashboard']['extra'] = 'Not an allowed visible field'
+        with self.assertRaises(SyncError):
+            self.sync.record(payload)
+
+    def test_legacy_workspace_without_assets_is_not_rewritten_on_read(self):
+        self.sync.record(sample())
+        old = self.sync.read()
+        old.pop('assets')
+        self.sync.workspace_path.write_text(json.dumps(old))
+        before = self.sync.workspace_path.read_bytes()
+        again = WorkspaceSync(self.sync.data_dir, dashboard_dir=self.sync.dashboard_dir)
+        self.assertEqual(again.read()['assets'], [])
+        self.assertEqual(again.read()['revision'], old['revision'])
+        self.assertEqual(again.workspace_path.read_bytes(), before)
+
+    def test_private_file_archive_and_verified_export_are_immutable(self):
+        self.sync.record(sample())
+        content = b'%PDF-FAKE\x00\xffSYNTHETIC-BINARY-PORTFOLIO-382749'
+        source = self.root/'synthetic-portfolio.pdf'
+        source.write_bytes(content)
+        asset = self.sync.archive_file(source, 'Synthetic portfolio', 'c1')
+        raw = self.sync.data_dir/'vault'/(asset['id']+'.bin')
+        self.assertEqual(asset['filename'], source.name)
+        self.assertEqual(asset['sha256'], hashlib.sha256(content).hexdigest())
+        self.assertEqual(asset['size'], len(content))
+        self.assertEqual(asset['conversation_id'], 'c1')
+        self.assertEqual(raw.read_bytes(), content)
+        self.assertEqual(stat.S_IMODE(raw.stat().st_mode), 0o600)
+        source.write_bytes(b'User later edited the original')
+        export = self.root/'exported.pdf'
+        self.assertEqual(self.sync.extract_asset(asset['id'], export), export)
+        self.assertEqual(export.read_bytes(), content)
+        self.assertEqual(stat.S_IMODE(export.stat().st_mode), 0o600)
+        with self.assertRaises(SyncError):
+            self.sync.extract_asset(asset['id'], export)
+        self.assertEqual(export.read_bytes(), content)
+        raw.write_bytes(b'corrupted')
+        with self.assertRaises(SyncError):
+            self.sync.extract_asset(asset['id'], self.root/'must-not-exist.pdf')
+        self.assertFalse((self.root/'must-not-exist.pdf').exists())
+        with self.assertRaises(SyncError):
+            self.sync.build()
+
+    def test_archive_rejects_symlinks_oversize_bad_reference_and_conflicts(self):
+        self.sync.record(sample())
+        source = self.root/'test.bin'
+        source.write_bytes(b'abc')
+        link = self.root/'link.bin'
+        link.symlink_to(source)
+        with self.assertRaises(SyncError):
+            self.sync.archive_file(link, 'Symlink')
+        with self.assertRaises(SyncError):
+            self.sync.archive_file(self.root, 'Directory')
+        with patch('sync_latte.MAX_ASSET_BYTES', 2):
+            with self.assertRaises(SyncError):
+                self.sync.archive_file(source, 'Too large')
+        with self.assertRaises(SyncError):
+            self.sync.archive_file(source, 'Missing conversation', 'not-present')
+        before = self.sync.read()
+        asset = self.sync.archive_file(source, 'Original file')
+        from types import SimpleNamespace
+        with patch('sync_latte.uuid4', return_value=SimpleNamespace(hex=asset['id'])):
+            with self.assertRaises(SyncError):
+                self.sync.archive_file(source, 'Conflict')
+        self.assertEqual(len(self.sync.read()['assets']), 1)
+        self.assertEqual((self.sync.data_dir/'vault'/(asset['id']+'.bin')).read_bytes(), b'abc')
+        self.assertEqual(self.sync.read()['revision'], before['revision']+1)
+        bad = deepcopy(asset)
+        bad['id'] = '../escape'
+        with self.assertRaises(SyncError):
+            self.sync.record({'assets':[bad]})
+        bad = deepcopy(asset)
+        bad['size'] = MAX_ASSET_BYTES+1
+        with self.assertRaises(SyncError):
+            self.sync.record({'assets':[bad]})
+
+    def test_archive_build_encrypts_binary_and_keeps_filename_in_encrypted_metadata(self):
+        self.sync.record(sample())
+        source = self.root/'PRIVATE-FILENAME-ONLY-IN-ENCRYPTED-METADATA.pdf'
+        content = b'%PDF-FAKE\x00\xffSYNTHETIC-BINARY-PRIVATE-CONTENT-382749'
+        source.write_bytes(content)
+        asset = self.sync.archive_file(source, 'Synthetic archive', 'c1')
+        output = self.sync.build()
+        envelope = json.loads((output/'vault'/(asset['id']+'.enc.json')).read_text())
+        self.assertEqual(envelope['format'], 'latte-asset-v1')
+        key = (self.sync.data_dir/'sync-key.bin').read_bytes()
+        nonce = base64.b64decode(envelope['nonce'])
+        encrypted = base64.b64decode(envelope['ciphertext'])
+        plain = AESGCM(key).decrypt(nonce, encrypted, ASSET_AAD+asset['id'].encode())
+        self.assertEqual(plain, content)
+        with self.assertRaises(InvalidTag):
+            AESGCM(key).decrypt(nonce, encrypted, ASSET_AAD+b'wrong-asset-id')
+        all_files = b''.join(p.read_bytes() for p in output.rglob('*') if p.is_file())
+        self.assertNotIn(content, all_files)
+        self.assertNotIn(source.name.encode(), all_files)
+        self.assertNotIn(key, all_files)
+        self.sync.build()
+        self.assertNotEqual(json.loads((output/'vault'/(asset['id']+'.enc.json')).read_text())['nonce'], envelope['nonce'])
+
     def test_historical_dates_do_not_require_invented_clock_times(self):
         payload = sample()
         for collection in ('conversations', 'decisions', 'activities'):
@@ -234,6 +377,24 @@ class GitPublicationTests(unittest.TestCase):
         remote = self.git('ls-remote', 'origin', 'refs/heads/latte-site').split()[0]
         self.assertEqual(remote, result['commit'])
         self.assertFalse(self.sync.status()['deployment_verified'])
+
+    def test_publication_includes_only_encrypted_nested_assets(self):
+        source = self.root/'synthetic-private-filename.pdf'
+        content = b'%PDF-SYNTHETIC-NESTED-PRIVATE-BINARY\x00\xff'
+        source.write_bytes(content)
+        asset = self.sync.archive_file(source, 'Synthetic archive', 'c1')
+        result = self.sync.publish(True)
+        files = self.git('ls-tree', '-r', '--name-only', result['commit']).splitlines()
+        encrypted_path = 'vault/'+asset['id']+'.enc.json'
+        self.assertIn(encrypted_path, files)
+        self.assertNotIn(source.name, files)
+        self.assertFalse(any(path.endswith('.bin') for path in files))
+        envelope = json.loads(self.git('show',result['commit']+':'+encrypted_path))
+        key = (self.sync.data_dir/'sync-key.bin').read_bytes()
+        plain = AESGCM(key).decrypt(base64.b64decode(envelope['nonce']),base64.b64decode(envelope['ciphertext']),ASSET_AAD+asset['id'].encode())
+        self.assertEqual(plain, content)
+        self.assertEqual((self.repo/'.git/index').read_bytes(),self.before_index)
+        self.assertEqual(self.sync.status()['asset_count'],1)
 
     def test_concurrent_remote_update_rejects_push_and_preserves_local_record(self):
         original_git = self.sync._git

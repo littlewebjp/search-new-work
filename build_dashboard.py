@@ -14,7 +14,7 @@ STATIC_FILES = ('index.html', 'styles.css', 'app.js')
 
 
 def demo_snapshot():
-    return {
+    snapshot = {
         'demo': True,
         'schema_version': 1, 'revision': 1, 'updated_at': '2026-10-31T03:00:00Z',
         'coverage': {'label': '架空データによる画面例', 'description': '機能を説明するための架空の会話です。あなたの記録ではありません。', 'last_recorded_at': '2026-10-31T03:00:00Z', 'record_count': 2},
@@ -31,6 +31,31 @@ def demo_snapshot():
         'documents': [{'id': 'demo-document', 'title': '制作経験の整理メモ（架空の例）', 'status': 'ready_for_review', 'body': 'これは機能説明用の架空の下書きです。\n\n【本人から聞いた経験】\n・ここに、会話で確認した制作経験を整理します。\n\n【未確認】\n・経験年数\n・公開できる作品\n・定量的な成果\n\n未確認の実績は書き足しません。応募・外部送信はしていません。', 'conversation_ids': ['demo-talk-02'], 'proposal_id': 'demo-preparation'}],
         'activities': [{'id': 'demo-activity', 'at': '2026-10-31', 'kind': 'prepared', 'text': '会話をもとに、経験の下書きを用意（架空の例）。', 'conversation_id': 'demo-talk-02', 'proposal_id': 'demo-preparation'}],
     }
+    # Keep detailed records available behind the dashboard, not on the paper view.
+    for proposal in snapshot['proposals']:
+        proposal['display_group'] = None
+    snapshot['conversations'].append({'id':'demo-choice','at':'2026-10-31','title':'応募の方向を決める（架空）','kind':'exchange','user_text':'○ この求人は応募待ちにして。','assistant_text':'応募待ちとして記録します。まだ提出はしていません。','summary':'機能説明用の架空のやりとり。','tags':[],'source':'架空の会話（機能説明用）'})
+    snapshot['coverage']['record_count'] = len(snapshot['conversations'])
+    rows = [
+        ('demo-new','new_proposal','new','東京都・在宅併用（架空）','EC向けの画像制作（架空の例）','新しく見つけた提案'),
+        ('demo-question','awaiting_decision','decision','大阪府（架空）','SNS向けの動画編集（架空の例）','仕事内容について返答待ち'),
+        ('demo-hold','deferred','deferred','出社条件を確認中（架空）','画像のレタッチ（架空の例）','出社日数の確認まで保留'),
+        ('demo-queue','application_queued','applied','在宅併用（架空）','販促物のデザイン（架空の例）','応募待ち・書類を準備中'),
+        ('demo-applied','applied','applied','東京都（架空）','Web画像の制作（架空の例）','応募済み・返答待ち'),
+    ]
+    for record_id,status,group,location,description,label in rows:
+        item={'id':record_id,'kind':'job','title':description,'status':status,'display_group':group,
+              'summary':'架空の画面例。実在求人ではありません。','recommendation':'','reasons':[],'unknowns':[],
+              'next_action':'','evidence':[],
+              'dashboard':{'location':location,'description':description,'status':label,'detail_url':'https://example.invalid/'+record_id},
+              'job':{'source_url':'https://example.invalid/'+record_id,'verified_at':'2026-10-31T03:00:00Z','location':location,'description':description}}
+        if status=='application_queued':
+            item['user_decision']={'choice':'yes','conversation_id':'demo-choice','quote':'○ この求人は応募待ちにして。'}
+        if status=='applied':
+            item['packet_ready']=True
+            item['submission_confirmed_at']='2026-10-31T03:00:00Z'
+        snapshot['proposals'].append(item)
+    return snapshot
 
 
 def build(output_dir):

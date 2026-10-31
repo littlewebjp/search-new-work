@@ -1,6 +1,15 @@
 # LATTE development
 
-LATTE is a Japanese personal companion for daily conversation and careful job-search preparation. Conversation happens in this ChatGPT thread. The dashboard shows remembered conversation, proposals, decisions, and preparation with links back to their source. The user must not have to transcribe or maintain a separate notebook.
+LATTE is a Japanese personal companion for job-search preparation. The user describes a cafe conversation: the assistant listens, researches, and proposes ways forward here. LATTE is the assistant's memory/archive behind the scenes and the user's minimal dashboard. Research and helpful proposals come first; recording and updating LATTE comes second. The user never transcribes or writes into LATTE.
+
+## Owner-approved interface and workflow
+
+- One paper-like page on mobile and PC. No tabs, forms, chat, timeline, profile, summary counters, or document panels.
+- Exactly four sections in this order: 新しい提案 / 判断待ち / 保留中 / 応募中.
+- Show only 勤務地 / 仕事内容 / 今どうなっているか per item. Details are a URL only. Keep full conversations, reasons, memories, and documents behind the interface.
+- ○ queues an actual sourced job as 応募待ち; it does not mean submitted. ▲ records 保留. For ×, ask the reason conversationally and remember it to improve the next suggestion. Never submit an application without explicit instructions.
+- The assistant maintains records and supplied files. Use `archive --file ... --title ...` for private assets (25MB/file); `extract` can retrieve originals with integrity checks. No frontend upload forms.
+- Do not change the design or develop new features just because the user shares a preference. Ask and wait for an explicit request to proceed. The current minimal implementation was authorized conditionally on questions, then the owner answered the three implementation questions. Those exact answers, including 専用リンク after the storage explanation, are recorded locally.
 
 - Run the existing checkout. Each cloud task is isolated; do not create a Git worktree unless requested.
 - Use Python 3.12+; the encrypted publisher needs `requirements-sync.txt`. Tests use `python3 -m unittest discover -s tests -v`. `latte.py` and `web/` are the legacy notebook; the current frontend is `dashboard/`.
