@@ -1,0 +1,128 @@
+{
+  "schema_version": 1,
+  "sources": [
+    {
+      "id": "green",
+      "name": "Green",
+      "modes": [
+        "employment",
+        "contract"
+      ],
+      "search_url": "https://www.green-japan.com/search",
+      "query_params": {
+        "keyword": "{query}"
+      },
+      "listing_pattern": "^/company/\\d+/job/\\d+",
+      "state": "verified",
+      "notes": "keywordを使う。keyは無効で汎用一覧へ飛ぶ。公開本文は取得可、応募要件など一部はログイン必須。正社員と業務委託を求人ごとに判別する。",
+      "verified_at": "2026-10-31T10:41:54+00:00",
+      "evidence": "既存の実査で keyword=レタッチ は50求人、画像加工は対象求人に変化。"
+    },
+    {
+      "id": "workship",
+      "name": "Workship",
+      "modes": [
+        "contract",
+        "employment"
+      ],
+      "search_url": "https://goworkship.com/portal/search",
+      "query_params": {
+        "tags": "keyword-{query}"
+      },
+      "listing_pattern": "^/portal/[^/]+/job/\\d+",
+      "state": "verified",
+      "notes": "公式JSの検索動作を確認。デザイナーカテゴリは /portal/occupation-designer。派遣や正社員表記の掲載もあるので契約形態を各本文で確認する。応募条件の一部は会員登録必須。",
+      "verified_at": "2026-10-31T10:41:54+00:00",
+      "evidence": "バナー検索はタイトル「バナー」、160件へ変化。画像加工は25件。デザイナーカテゴリ529件。"
+    },
+    {
+      "id": "mamaworks",
+      "name": "ママワークス",
+      "modes": [
+        "contract",
+        "employment"
+      ],
+      "search_url": "https://mamaworks.jp/jobs",
+      "query_params": {
+        "free_word": "{query}"
+      },
+      "listing_pattern": "^/job/\\d+",
+      "state": "verified",
+      "notes": "契約形態を業務委託へ絞るなら ltoe[]=6。公開本文に契約、報酬、掲載期間、業務期間あり。低単価案件も含むため継続性・実作業時間・税込/税抜/費用を確認し、少額案件を生活収入の代替と見なさない。",
+      "verified_at": "2026-10-31T10:41:54+00:00",
+      "evidence": "画像加工で[画像加工]の検索結果4件、バナーで21件に変化。",
+      "mode_query_params": {
+        "contract": {
+          "ltoe[]": "6"
+        }
+      }
+    },
+    {
+      "id": "redesigner",
+      "name": "ReDesigner",
+      "modes": [
+        "employment",
+        "contract"
+      ],
+      "search_url": "https://redesigner.jp/jobs",
+      "query_params": {
+        "keyword": "{query}"
+      },
+      "listing_pattern": "^/jobs/JN[a-zA-Z0-9]+",
+      "state": "verified",
+      "notes": "キーワード付き公開一覧でタイトル・説明・契約形態の閲覧可。UI/UXやリード職も多いので画像制作の実務担当か本文で確認。",
+      "verified_at": "2026-10-31T10:41:54+00:00",
+      "evidence": "無指定445件→keyword=バナーで60件、カードにバナー制作の業務記載。業務委託フリーランス求人も表示。"
+    },
+    {
+      "id": "reworker",
+      "name": "Reworker",
+      "modes": [
+        "employment",
+        "contract"
+      ],
+      "search_url": "https://www.reworker.jp/recruitments/new",
+      "query_params": {
+        "q[text]": "{query}"
+      },
+      "listing_pattern": "^/company/\\d+/jobs/\\d+",
+      "state": "limited",
+      "notes": "公式JSから q[text] を確認。業務委託フィルターは q[working_status][]=subcontractor。詳細閲覧は登録後と明記されるため、一覧だけで条件を断言しない。キーワードは職種名以外の本文にもヒットする。",
+      "verified_at": "2026-10-31T10:41:54+00:00",
+      "evidence": "バナー×業務委託0件、デザイナー×業務委託2件。カードに業務委託・時間単価・週稼働が表示。詳細URL例 /company/431/jobs/7250。",
+      "mode_query_params": {
+        "contract": {
+          "q[working_status][]": "subcontractor"
+        }
+      }
+    },
+    {
+      "id": "crowdworks",
+      "name": "CrowdWorks",
+      "modes": [
+        "contract"
+      ],
+      "search_url": "https://crowdworks.jp/public/jobs",
+      "query_params": {
+        "search[keywords]": "{query}"
+      },
+      "listing_pattern": "^/public/jobs/\\d+",
+      "state": "unusable",
+      "notes": "この実行環境のHTTP取得では200でもJavaScript表示エラーのシェルだけ。結果の実内容が取れていないので検索成功扱いにしない。",
+      "verified_at": "2026-10-31T10:41:54+00:00"
+    },
+    {
+      "id": "lancers",
+      "name": "Lancers",
+      "modes": [
+        "contract"
+      ],
+      "search_url": "https://www.lancers.jp/work/search",
+      "query_params": {},
+      "listing_pattern": "^/work/detail/\\d+",
+      "state": "unusable",
+      "notes": "公開検索への通常GETで405。検索設定を確立していないので動く検索先に数えない。",
+      "verified_at": "2026-10-31T10:41:54+00:00"
+    }
+  ]
+}
